@@ -73,6 +73,11 @@
             <tbody id="peopleRows" class="align-top"></tbody>
           </table>
         </div>
+        <div class="flex justify-end items-center gap-2 -mt-1">
+          <button id="addPersonInline" class="px-2 py-1 text-sm rounded-lg border border-gray-200 bg-gray-50 hover:bg-gray-100">
+            + Add person
+          </button>
+        </div>
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 pt-3">
           <label class="text-sm">Start hour
             <input id="startHour" type="number" min="0" max="23" class="w-full mt-1 rounded-xl border-gray-200" value="6"/>
@@ -263,6 +268,25 @@
   function removePerson(id){
     state.people = state.people.filter(p=>p.id!==id);
     delete state.schedule[id];
+    renderAll();
+  }
+
+  // --- Add Person ---
+  function addPerson(partial = {}) {
+    const p = {
+      id: uid(),
+      name: partial.name ?? `Person ${state.people.length + 1}`,
+      color: partial.color ?? "#8b5cf6",
+      dailyMin: partial.dailyMin ?? 0,
+      dailyMax: partial.dailyMax ?? 8,
+      weeklyMin: partial.weeklyMin ?? 0,
+      weeklyMax: partial.weeklyMax ?? 40,
+    };
+    state.people.push(p);
+    if (!state.schedule[p.id]) state.schedule[p.id] = {};
+    for (let d = 0; d < 5; d++) {
+      if (!state.schedule[p.id][d]) state.schedule[p.id][d] = [];
+    }
     renderAll();
   }
 
@@ -585,6 +609,7 @@
   document.getElementById('loadBtn').onclick = ()=>{ load(); toast('Loaded.'); };
   document.getElementById('resetBtn').onclick = ()=>{ if(confirm('Reset to defaults?')) reset(); };
   document.getElementById('diagBtn').onclick = runDiagnostics;
+  document.getElementById('addPersonInline').onclick = ()=> addPerson();
 
   document.getElementById('startHour').oninput = e=>{ state.startHour = +e.target.value; renderGrid(); };
   document.getElementById('endHour').oninput = e=>{ state.endHour = +e.target.value; renderGrid(); };
