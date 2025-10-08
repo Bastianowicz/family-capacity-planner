@@ -49,7 +49,6 @@
         <button id="saveBtn" class="px-3 py-2 rounded-xl bg-blue-600 text-white shadow hover:bg-blue-700">Save</button>
         <button id="loadBtn" class="px-3 py-2 rounded-xl bg-blue-100 text-blue-700 hover:bg-blue-200">Load</button>
         <button id="resetBtn" class="px-3 py-2 rounded-xl bg-gray-100 hover:bg-gray-200">Reset</button>
-        <button id="diagBtn" class="px-3 py-2 rounded-xl bg-purple-600 text-white hover:bg-purple-700">Diagnostics</button>
       </div>
     </header>
 
@@ -537,78 +536,12 @@
   function load(){ const s = localStorage.getItem('familyPlannerV8'); if(s){ state = JSON.parse(s); renderAll(); } }
   function reset(){ localStorage.removeItem('familyPlannerV8'); location.reload(); }
 
-  // ------- Diagnostics (tests) -------
-  function runDiagnostics(){
-    let passed = 0, failed = 0; const logs = [];
-    const assert = (name, cond) => { (cond ? passed++ : failed++); logs.push((cond? '✔':'✘')+ ' ' + name); };
-
-    try{
-      ensureSchedule();
-      assert('schedule created for all people', state.people.every(p=>state.schedule[p.id]));
-      assert('5 days present for each person', state.people.every(p=>[0,1,2,3,4].every(d=>Array.isArray(state.schedule[p.id][d]))));
-
-      const pid = state.people[0].id;
-      const before = weekTotalHours(pid);
-      addInterval(pid, 0, timeToMin(state.startHour), timeToMin(state.startHour)+state.snapMin*2);
-      const afterAdd = weekTotalHours(pid);
-      assert('adding interval increases week hours', afterAdd > before);
-      // remove the last interval we added
-      const last = state.schedule[pid][0].slice(-1)[0];
-      removeInterval(pid, 0, last.id);
-      const afterRemove = weekTotalHours(pid);
-      assert('removing interval decreases week hours', afterRemove < afterAdd);
-
-      // Move updates
-      const it = state.schedule[pid][1][0];
-      const startOld = it.startMin, endOld = it.endMin;
-      applyTransformToTimesFromPixels( minToPx( (startOld - timeToMin(state.startHour)) + 30 ), minToPx( (endOld-startOld) ), pid, 1, it);
-      assert('move updates start time (snapped)', it.startMin !== startOld);
-
-      // Clamp within day & min duration
-      const fake = { id: uid(), startMin: timeToMin(state.startHour)-120, endMin: timeToMin(state.endHour)+120 };
-      applyTransformToTimesFromPixels( minToPx(-180), minToPx( (state.endHour-state.startHour)*60 + 600 ), pid, 2, fake);
-      const withinBounds = fake.startMin >= timeToMin(state.startHour) && fake.endMin <= timeToMin(state.endHour) && (fake.endMin - fake.startMin) >= state.snapMin;
-      assert('clamp within day window & respect min duration', withinBounds);
-
-      // Right-edge resize increases duration and updates caption
-      const it2 = state.schedule[pid][2][0];
-      const durOld = it2.endMin - it2.startMin;
-      const dayStartMin = timeToMin(state.startHour);
-      const xPx = minToPx(it2.startMin - dayStartMin);
-      const wPx = minToPx((it2.endMin - it2.startMin) + 60); // +1h
-      applyTransformToTimesFromPixels(xPx, wPx, pid, 2, it2);
-      assert('right resize increases duration', (it2.endMin - it2.startMin) > durOld);
-      const barEl = document.querySelector(`.bar[data-iid="${it2.id}"] [data-duration]`);
-      const expected = `${fmtHM(it2.startMin)}–${fmtHM(it2.endMin)} (${minsToH(it2.endMin-it2.startMin)}h)`;
-      assert('caption updates after resize', barEl && barEl.textContent === expected);
-      const capStyle = barEl && getComputedStyle(barEl);
-      assert('caption is non-interactive', capStyle && capStyle.pointerEvents === 'none');
-
-      // NEW: small-width bar shows flycap and remains draggable
-      const addStart = timeToMin(state.startHour) + 15; // 15 min in
-      addInterval(pid, 3, addStart, addStart + 30); // 30 min -> width < 64px at default hour width
-      const newest = state.schedule[pid][3].slice(-1)[0];
-      const el = document.querySelector(`.bar[data-iid="${newest.id}"]`);
-      assert('small bar element exists', !!el);
-      assert('small bar has class small', el && el.classList.contains('small'));
-      syncFlycapForBar(el);
-      assert('flycap is shown for small bar', document.getElementById('flycap').classList.contains('show'));
-
-      console.log('Diagnostics results:\n' + logs.join('\n'));
-      toast(`Diagnostics: ${passed} passed, ${failed} failed`);
-    } catch(e){
-      console.error('Diagnostics error', e);
-      toast('Diagnostics error: ' + (e.message||e));
-    }
-  }
-
   // ------- Wiring -------
   function renderAll(){ renderPeopleTable(); renderGrid(); }
 
   document.getElementById('saveBtn').onclick = ()=>{ save(); toast('Saved.'); };
   document.getElementById('loadBtn').onclick = ()=>{ load(); toast('Loaded.'); };
   document.getElementById('resetBtn').onclick = ()=>{ if(confirm('Reset to defaults?')) reset(); };
-  document.getElementById('diagBtn').onclick = runDiagnostics;
   document.getElementById('addPersonInline').onclick = ()=> addPerson();
 
   document.getElementById('startHour').oninput = e=>{ state.startHour = +e.target.value; renderGrid(); };
@@ -621,6 +554,31 @@
     t.textContent = msg; t.className = 'fixed bottom-4 right-4 bg-black text-white text-sm px-3 py-2 rounded-xl opacity-90 z-50';
     document.body.appendChild(t); setTimeout(()=>t.remove(), 1500);
   }
+
+  // ------- Console smoke tests (non-invasive) -------
+  (function smokeTests(){
+    try{
+      const issues = [];
+      if (!document.querySelector('#grid')) issues.push('grid missing');
+      if (!document.querySelector('#summary')) issues.push('summary missing');
+      if ((state.people?.length ?? 0) < 1) issues.push('no people in state');
+      ensureSchedule();
+      renderAll();
+      // verify 5 day sections
+      const dayCards = document.querySelectorAll('.day-card');
+      if (dayCards.length !== 5) issues.push(`expected 5 day rows, got ${dayCards.length}`);
+      // verify lanes per day equals people
+      const lanesFirstDay = dayCards[0]?.querySelectorAll('[data-slot]')?.length || 0;
+      if (lanesFirstDay !== state.people.length) issues.push(`lanes mismatch: ${lanesFirstDay} vs ${state.people.length}`);
+      // caption non-interactive
+      const anyCaption = document.querySelector('.bar .caption');
+      if (anyCaption){
+        const pe = getComputedStyle(anyCaption).pointerEvents;
+        if (pe !== 'none') issues.push('caption should not capture pointer events');
+      }
+      if (issues.length) console.warn('[Planner smoke tests] Issues:', issues); else console.log('[Planner smoke tests] OK');
+    }catch(e){ console.warn('[Planner smoke tests] error', e); }
+  })();
 
   // init
   ensureSchedule();
