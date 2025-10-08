@@ -16,12 +16,13 @@
     .timeline.half { background: repeating-linear-gradient(to right, transparent 0, transparent calc(var(--hour-width)/2 - 1px), rgba(0,0,0,.05) calc(var(--hour-width)/2), transparent calc(var(--hour-width)/2 + 1px)); }
 
     /* bars */
-    .bar { user-select: none; cursor: grab; transition: box-shadow .15s ease, transform .06s ease, background-color .15s ease, opacity .2s ease; display:flex; align-items:center; position:relative; justify-content:space-between; }
+    .bar { user-select: none; cursor: grab; transition: box-shadow .15s ease, transform .06s ease, background-color .15s ease, opacity .2s ease; display:flex; align-items:center; position:relative; justify-content:space-between; touch-action: none; }
     .bar:hover { box-shadow: 0 4px 12px rgba(0,0,0,.15); opacity: 0.98; }
     .bar.dragging { cursor: grabbing; opacity: 1; box-shadow: 0 6px 18px rgba(0,0,0,.2); }
     .viol { box-shadow: 0 0 0 3px rgba(239,68,68,0.6) !important; }
-    .handle { width: 8px; height: 100%; transition: background .1s ease; cursor: ew-resize; }
+    .handle { width: 8px; height: 100%; transition: background .1s ease; cursor: ew-resize; touch-action: none; }
     .bar:hover .handle { background: rgba(0,0,0,.18); }
+    @media (pointer: coarse){ .handle{ width: 18px; } }
 
     /* captions: overlay + global flycap */
     .caption { position: absolute; inset: 0; display:flex; align-items:center; justify-content:center; padding: 0 4px; white-space: nowrap; text-overflow: ellipsis; overflow: hidden; pointer-events: none; }
@@ -199,6 +200,8 @@
   const tplLane = document.getElementById('laneTpl');
   const tplBar = document.getElementById('barTpl');
   const summary = document.getElementById('summary');
+  // Touch detection
+  const IS_TOUCH = (("ontouchstart" in window) || navigator.maxTouchPoints>0 || matchMedia('(pointer: coarse)').matches);
 
   // ------- Global flycap (body-level so it's never clipped) -------
   let flycapEl = null;
@@ -330,10 +333,11 @@
         slot.addEventListener('mouseup', (e)=>{
           if (e.button !== 0) return;
           if (!slot._down) return;
+          if (slot._fromTouch) return; // ignore synthetic mouseup after touch
           const moved = Math.hypot(e.clientX - slot._down.x, e.clientY - slot._down.y);
           const dt = performance.now() - slot._down.t;
           slot._down = null;
-          if (moved > 3 || dt > 600) return; // treat as drag or long-press -> ignore create
+          if (moved > 3 || dt > 600) return; // drag or long-press -> ignore create
           const rect = slot.getBoundingClientRect();
           const x = e.clientX - rect.left; // px within lane
           const startRelMin = pxToMin(x);
@@ -342,6 +346,31 @@
           const eMin = s + Math.max(state.snapMin*4, state.snapMin); // default ~1h
           addInterval(p.id, d, s, Math.min(dayStart + timeToMin(hours()), eMin));
         });
+        // Touch tap-to-create (mirrors mouse)
+        slot.addEventListener('touchstart', (e)=>{
+          const t = e.touches[0]; if(!t) return;
+          if (e.target.closest('.bar')) return;
+          slot._fromTouch = true;
+          slot._down = { x: t.clientX, y: t.clientY, t: performance.now() };
+        }, {passive:true});
+        slot.addEventListener('touchend', (e)=>{
+          if (!slot._down) { slot._fromTouch=false; return; }
+          const t = e.changedTouches[0]; if(!t){ slot._fromTouch=false; return; }
+          const moved = Math.hypot(t.clientX - slot._down.x, t.clientY - slot._down.y);
+          const dt = performance.now() - slot._down.t;
+          slot._down = null;
+          if (moved > 6 || dt > 600){ slot._fromTouch=false; return; }
+          const rect = slot.getBoundingClientRect();
+          const x = t.clientX - rect.left;
+          const startRelMin = pxToMin(x);
+          const dayStart = timeToMin(state.startHour);
+          let s = dayStart + startRelMin; s = snapMinFunc(s);
+          const eMin = s + Math.max(state.snapMin*4, state.snapMin);
+          addInterval(p.id, d, s, Math.min(dayStart + timeToMin(hours()), eMin));
+          // clear touch flag shortly after to allow future mouse use
+          setTimeout(()=>{ slot._fromTouch=false; }, 0);
+        }, {passive:true});
+        slot.addEventListener('contextmenu', (e)=> e.preventDefault());
 
         // Render intervals for this person/day
         const intervals = state.schedule[p.id][d] || [];
@@ -472,6 +501,54 @@
       window.removeEventListener('mousemove', onMove);
       computeAndRenderSummary();
     }
+
+    // --- Touch drag/resize mirrors mouse without changing logic ---
+    bar.addEventListener('touchstart', (e)=>{
+      const t = e.touches[0]; if(!t) return;
+      e.preventDefault();
+      const target = document.elementFromPoint(t.clientX, t.clientY);
+      if (target === leftHandle) mode = 'resize-l';
+      else if (target === rightHandle) mode = 'resize-r';
+      else mode = 'move';
+      startX = t.clientX;
+      const m = new DOMMatrixReadOnly(getComputedStyle(bar).transform);
+      orig.x = m.m41 || 0;
+      orig.w = bar.clientWidth;
+      orig.start = it.startMin; orig.end = it.endMin;
+      bar.classList.add('dragging');
+      syncFlycapForBar(bar);
+
+      const onTouchMove = (ev)=>{
+        const tt = ev.touches[0]; if(!tt) return;
+        const parent = bar.parentElement; const parentW = parent.clientWidth;
+        const dx = tt.clientX - startX;
+        if (mode === 'move'){
+          let newX = clamp(orig.x + dx, 0, parentW - orig.w);
+          bar.style.transform = `translateX(${newX}px)`;
+          applyTransformToTimesFromPixels(newX, bar.clientWidth, pid, d, it);
+        } else if (mode === 'resize-l'){
+          let newX = clamp(orig.x + dx, 0, orig.x + orig.w - 24);
+          let newW = clamp(orig.w + (orig.x - newX), 24, parentW - newX);
+          bar.style.width = newW + 'px';
+          bar.style.transform = `translateX(${newX}px)`;
+          applyTransformToTimesFromPixels(newX, newW, pid, d, it);
+        } else if (mode === 'resize-r'){
+          let newW = clamp(orig.w + dx, 24, parentW - orig.x);
+          bar.style.width = newW + 'px';
+          applyTransformToTimesFromPixels(orig.x, newW, pid, d, it);
+        }
+        syncFlycapForBar(bar);
+      };
+      const onTouchEnd = ()=>{
+        bar.classList.remove('dragging');
+        hideFlycap();
+        window.removeEventListener('touchmove', onTouchMove);
+        computeAndRenderSummary();
+      };
+      window.addEventListener('touchmove', onTouchMove, {passive:true});
+      window.addEventListener('touchend', onTouchEnd, { once: true });
+    }, {passive:true});
+
   }
 
   function applyTransformToTimesFromPixels(xPx, wPx, pid, d, it){
